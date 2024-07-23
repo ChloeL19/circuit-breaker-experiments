@@ -15,21 +15,25 @@ import seaborn as sns
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import wandb
+
+# Initialize wandb
+wandb.init(project="break-circuit-breakers")
 
 # Set seaborn style to whitegrid.
 sns.set_style("whitegrid")
 
 data_file = (
-    # "task_scary_evals_psychopathy__max_num_shots_300__num_examples_301.pkl"
+    "task_scary_evals_psychopathy__max_num_shots_300__num_examples_301.pkl"
     # "mean.pkl" # not yet implemented 
-    "unpsychopathic.pkl"
+    # "unpsychopathic.pkl"
 )
 results_dir = os.path.join(
     "results",
     data_file,
 )
 pkl_file_path = os.path.join(
-    "", # previously "data"
+    "data", 
     data_file,
 )
 with open(pkl_file_path, "rb") as f:
@@ -41,14 +45,16 @@ force_refresh = False
 model_names_to_max_context_lengths_dict = {
     # "mistralai/Mistral-7B-v0.1": 16384,
     # "mistralai/Mistral-7B-Instruct-v0.1": 16384,
-    "mistralai/Mistral-7B-Instruct-v0.2": 16384,
+    # "mistralai/Mistral-7B-Instruct-v0.2": 16384,
+    "mistralai/Mistral-7B-Instruct-v0.3": 16384,
     # "mistralai/Mixtral-8x7B-v0.1": 16384,
     # "mistralai/Mixtral-8x7B-Instruct-v0.1": 16384,
     # "meta-llama/Llama-2-7b-chat-hf": 4096,
     # "meta-llama/Llama-2-13b-chat-hf": 4096,
     # "meta-llama/Llama-2-70b-chat-hf": 4096,
-    # "togethercomputer/Llama-2-7B-32K-Instruct": 32768,
-    "GraySwanAI/Mistral-7B-Instruct-RR" : 8192,
+    "togethercomputer/Llama-2-7B-32K-Instruct": 32768,
+    # "GraySwanAI/Mistral-7B-Instruct-RR" : 8192,
+    # "Groq/Llama-3-Groq-8B-Tool-Use": 32768,
 }
 
 LLAMA_SYSTEM_PROMPT = """<s>[INST] <<SYS>>
@@ -133,25 +139,26 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
 
     # Lightly modify the tokenizer and get the token IDs.
     tokenizer.pad_token = tokenizer.eos_token
-    if "mistralai" in model_name and model_name != "mistralai/Mistral-7B-v0.1":
-        # TODO: Decide how to handle this.
-        # For whatever reason, tokenizer.encode() encodes "Yes" as 5592 and "No" as 1770.
-        # But tokenizer.apply_chat_template encodes "Yes" as 5613 and "No" as 2501.
-        # Easiest solution is to override here.
-        # Would a more robust solution be to encode the prompt, then decode it, and
-        # then find the token IDs of "Yes" and "No"? That way we don't have to hardcode.
-        yes_token_id = 5613
-        no_token_id = 2501
+    # DEPRECATED for transformers version 4.42.4
+    # if "mistralai" in model_name and model_name != "mistralai/Mistral-7B-v0.1":
+    #     # TODO: Decide how to handle this.
+    #     # For whatever reason, tokenizer.encode() encodes "Yes" as 5592 and "No" as 1770.
+    #     # But tokenizer.apply_chat_template encodes "Yes" as 5613 and "No" as 2501.
+    #     # Easiest solution is to override here.
+    #     # Would a more robust solution be to encode the prompt, then decode it, and
+    #     # then find the token IDs of "Yes" and "No"? That way we don't have to hardcode.
+    #     # yes_token_id = 5613
+    #     # no_token_id = 2501
 
-        # More robust solution to find token IDs of "Yes" and "No", suggested by gpt4o
-        prompt = "Yes No"
-        encoded_prompt = tokenizer.encode(prompt, add_special_tokens=False)
-        decoded_prompt = tokenizer.decode(encoded_prompt)
-        yes_token_id = encoded_prompt[decoded_prompt.split().index("Yes")]
-        no_token_id = encoded_prompt[decoded_prompt.split().index("No")]
-    else:
-        yes_token_id = tokenizer.encode("Yes", add_special_tokens=False)[0]
-        no_token_id = tokenizer.encode("No", add_special_tokens=False)[0]
+    #     # More robust solution to find token IDs of "Yes" and "No", suggested by gpt4o
+    #     prompt = "Yes No"
+    #     encoded_prompt = tokenizer.encode(prompt, add_special_tokens=False)
+    #     decoded_prompt = tokenizer.decode(encoded_prompt)
+    #     yes_token_id = encoded_prompt[decoded_prompt.split().index("Yes")]
+    #     no_token_id = encoded_prompt[decoded_prompt.split().index("No")]
+    # else:
+    yes_token_id = tokenizer.encode("Yes", add_special_tokens=False)[0]
+    no_token_id = tokenizer.encode("No", add_special_tokens=False)[0]
 
     if "meta-llama" in model_name:
         prompts_per_sample = [
@@ -209,6 +216,7 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
             )
             logits = output.logits
 
+        # CHLOE DEPRECATED EXPERIMENT: plot NLL of opposite of expected response---------------------
         yes_logits = logits[0, yes_token_seq_indices, yes_token_id]
         no_logits = logits[0, no_token_seq_indices, no_token_id]
 
@@ -218,6 +226,7 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
         no_probs = torch.softmax(logits[0, no_token_seq_indices, :], dim=1)[
             :, no_token_id
         ]
+        # CHLOE EXPERIMENT: changes end here---------------------
         seq_indices = (
             torch.cat([yes_token_seq_indices, no_token_seq_indices])
             .detach()
@@ -225,6 +234,7 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
             .numpy()
         )
         argsort_indices = np.argsort(seq_indices)
+        # chloe note: do I want to sort in descending for nonpsychopathic?
         logits_arr = (
             torch.cat([yes_logits, no_logits])
             .detach()
@@ -257,6 +267,9 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
     print(f"{model_name} Shape: ", model_results_df.shape)
     print(model_results_df.head())
 
+    # Log the results table, CHLOE not sure how to do this properly, or if worth it
+
+
 # Load data from disk.
 model_results_dfs_list = []
 for model_name in model_names_to_max_context_lengths_dict.keys():
@@ -286,3 +299,5 @@ ax.set_yscale("log")
 sns.move_legend(ax, "upper left", bbox_to_anchor=(1.0, 1.0))
 plt.savefig(os.path.join(results_dir, "prob_scaling_fig.png"))
 # plt.show()
+
+wandb.finish()
