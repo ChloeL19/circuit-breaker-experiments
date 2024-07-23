@@ -53,7 +53,7 @@ model_names_to_max_context_lengths_dict = {
     # "meta-llama/Llama-2-7b-chat-hf": 4096,
     # "meta-llama/Llama-2-13b-chat-hf": 4096,
     # "meta-llama/Llama-2-70b-chat-hf": 4096,
-    "togethercomputer/Llama-2-7B-32K-Instruct": 32768,
+    # "togethercomputer/Llama-2-7B-32K-Instruct": 32768,
     # "GraySwanAI/Mistral-7B-Instruct-RR" : 8192,
     # "Groq/Llama-3-Groq-8B-Tool-Use": 32768,
 }
@@ -124,7 +124,26 @@ def convert_sample_to_mistral_prompts(
 def extract_response_tokens_from_sample(
         sample, delim=": "
 ):
-    pass
+    """
+    NOTE: can copy splitting code from above
+    Return a list of strings (response texts) for the given sample (?)
+    """
+    turns = re.split(r'\n\n(?=Human:|Assistant:)', sample.lstrip("\n"))  # Split only on newlines followed by "Human:" or "Assistant:"
+    
+    resp_texts = []
+    for tid, turn in enumerate(turns):
+        try:
+            assert delim in turn, turn
+        except:
+            import pdb; pdb.set_trace();
+        speaker, text = turn.split(delim, 1)
+        assert speaker in speaker2role.keys()
+        assert not turn.endswith("\n")
+        if speaker == "Assistant":
+            resp_texts.append(
+                text
+            )
+    return resp_texts
     
 results = []
 os.makedirs(results_dir, exist_ok=True)
@@ -157,19 +176,21 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
 
 
     if "meta-llama" in model_name:
-        import pdb; pdb.set_trace();
+        # import pdb; pdb.set_trace();
         prompts_per_sample = [
             LLAMA_SYSTEM_PROMPT
             + "".join(convert_sample_to_llama2_prompts(sample))
             for sample in samples_list
         ]
     elif "mistralai" or "GraySwanAI" in model_name:
-        import pdb; pdb.set_trace();
         prompts_per_sample = [
             tokenizer.apply_chat_template(
                 convert_sample_to_mistral_prompts(sample=sample), tokenize=False
             )
             for sample in samples_list
+        ]
+        resps_per_sample = [ # like a 3D array
+            extract_response_tokens_from_sample(sample) for sample in samples_list
         ]
     elif "togethercompute" in model_name:
         raise NotImplementedError
@@ -179,8 +200,11 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
     for sample_idx, prompt in tqdm(enumerate(prompts_per_sample)):
         print(f"Model: {model_name}\tSample: {sample_idx}\tTime: {time.time()}")
 
-        # Find the expected response:
-        import pdb; pdb.set_trace();
+        # We have a list of expected responses, so get that list
+        resp_texts = resps_per_sample[sample_idx]
+
+        import pdb; pdb.set_trace(); # check shape if I run resp_texts in batch job through tokenizer
+        # TODO: how apply attention mask to the returned ids from the tokenizer? then can roll with the rest
 
         # Encode the prompt using the tokenizer.
         prompt_encoded = tokenizer(
@@ -195,6 +219,8 @@ for model_name in model_names_to_max_context_lengths_dict.keys():
         # If you want to convert the input IDs back to string tokens:
         # tokens = tokenizer.convert_ids_to_tokens(prompt_encoded["input_ids"][0])
         tokenized_prompt_len = prompt_encoded["input_ids"].shape[1]
+
+        # find response_seq_indices, to do this use a loop and a sliding window
 
         # We shift by -1 because we want the probability mass the model places
         # when predicting the yes or no tokens.
